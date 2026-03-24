@@ -70,7 +70,7 @@ function App() {
 
   return (
     <main className="upload-mvp">
-      <h1>Mercura – PDF Extraction</h1>
+      <h1>SpecExtract</h1>
       <p className="subtitle">Upload a construction specification PDF to extract project details.</p>
 
       <form onSubmit={handleSubmit} className="upload-form">

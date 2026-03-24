@@ -53,7 +53,7 @@ def _extract_fields_from_chunk(text_chunk: str, client: Client, model: str) -> d
         return json.loads(cleaned)
 
 
-app = FastAPI(title="Mercura API (MVP)")
+app = FastAPI(title="SpecExtract API (MVP)")
 
 app.add_middleware(
     CORSMiddleware,

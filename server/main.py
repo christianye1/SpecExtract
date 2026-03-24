@@ -211,7 +211,7 @@ def _process_job(job_id: str, file_path: Path, filename: str) -> None:
         _set_job(job_id, status=JobStatus.failed, progress=1.0, error=str(e))
 
 
-app = FastAPI(title="Mercura API")
+app = FastAPI(title="SpecExtract API")
 
 app.add_middleware(
     # CORS allows a separate frontend dev server (different origin) to call our API.
