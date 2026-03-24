@@ -1,0 +1,4 @@
+/.DS_Store
+/.venv
+server/.env
+**/.venv
