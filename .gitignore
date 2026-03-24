@@ -2,3 +2,7 @@
 /.venv
 server/.env
 **/.venv
+
+# Local sample PDFs (not committed; keep on your machine only)
+/specification_documents/
+/specification_documents.zip
