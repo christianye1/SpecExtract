@@ -94,7 +94,7 @@ You decide the architecture and look of the app, but here are some key requireme
 - PDF uploads should **not block** the server or UI.
 - The application needs to process large documents (100s–1000s of pages) efficiently. Large PDFs may take **minutes** — plan for that.
 
-You can find example PDFs in the `specification_documents` dir.
+Put your own example PDFs in a `specification_documents` directory at the repo root if you like; that folder and any `specification_documents.zip` are **not** tracked in Git (local only).
 
 Data should be persisted to local files or a lightweight DB. That is up to you.
 
