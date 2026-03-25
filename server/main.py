@@ -1,4 +1,3 @@
-import json
 import os
 import threading
 import time
@@ -15,9 +14,9 @@ from fastapi.middleware.cors import CORSMiddleware
 # Gemini SDK (installed via `google-genai`)
 from google.genai import Client
 
-import fitz  # PyMuPDF (PDF parsing)
-
 from dotenv import load_dotenv
+
+from metadata_extract import extract_fields_from_pdf_bytes
 
 # Load environment variables from `server/.env` (if present).
 # This allows secrets/configuration (API keys, data dir) to be set without hardcoding.
@@ -86,66 +85,6 @@ def _set_job(job_id: str, **fields: Any) -> None:
         job.touch()
 
 
-def _read_pdf_text(file_path: Path) -> str:
-    # Extract text from a PDF using PyMuPDF.
-    # We do it page-by-page so we can support large documents.
-    # Extract text page-by-page to support large files.
-    # For complex PDFs, extraction quality can vary; Gemini can still often infer fields from partial text.
-    doc = fitz.open(str(file_path))
-    chunks: list[str] = []
-    for page in doc:
-        chunks.append(page.get_text() or "")
-    return "\n".join(chunks)
-
-
-def _chunk_text(text: str, max_chars: int = 6000) -> list[str]:
-    # Chunking exists to keep prompts within model limits.
-    # Instead of tokenizing (harder), we approximate using character windows.
-    # Simple chunking: split into contiguous character windows.
-    # This avoids implementing tokenization up-front.
-    text = text.strip()
-    if not text:
-        return []
-    return [text[i : i + max_chars] for i in range(0, len(text), max_chars)]
-
-
-def _gemini_extract_project_fields(text_chunk: str, client: Client, model: str) -> dict[str, Any]:
-    # Ask Gemini to extract just two fields from a chunk of PDF text.
-    # We instruct the model to output a strict JSON object with the exact keys we need.
-    # Ask Gemini to return strict JSON with the only fields we care about.
-    prompt = (
-        "You are extracting project metadata from construction specification PDFs.\n\n"
-        "Given the following extracted text chunk, identify:\n"
-        "- Project ID\n"
-        "- Project Name\n\n"
-        "Return ONLY valid JSON with exactly this shape:\n"
-        "{\n"
-        '  "project_id": string | null,\n'
-        '  "project_name": string | null\n'
-        "}\n\n"
-        "If a field is not present in this chunk, set it to null.\n\n"
-        f"TEXT CHUNK:\n{text_chunk}\n"
-    )
-
-    resp = client.models.generate_content(
-        model=model,
-        contents=prompt,
-    )
-
-    # The SDK returns a response object; its text is typically accessible via `resp.text`.
-    # We keep parsing defensive because Gemini occasionally returns extra whitespace.
-    raw = getattr(resp, "text", None) or str(resp)
-    raw = raw.strip()
-    try:
-        # Most of the time Gemini returns exactly the JSON we requested.
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        # Sometimes Gemini may wrap JSON in code fences (```json ... ```).
-        # We strip those and retry parsing.
-        cleaned = raw.replace("```json", "").replace("```", "").strip()
-        return json.loads(cleaned)
-
-
 def _process_job(job_id: str, file_path: Path, filename: str) -> None:
     # This function runs in the "background" after /api/upload returns.
     # It updates the job record as it goes so the frontend can display progress.
@@ -157,51 +96,18 @@ def _process_job(job_id: str, file_path: Path, filename: str) -> None:
         api_key = os.getenv("GEMINI_API_KEY")
         if not api_key:
             raise RuntimeError("Missing GEMINI_API_KEY env var")
-        model = os.getenv("GEMINI_MODEL", "gemini-1.5-pro")
+        model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
-        # Create a Gemini client for this job.
         client = Client(api_key=api_key)
 
-        # 1) Extract full text
-        text = _read_pdf_text(file_path)
-        # Text extraction is done; update progress to indicate the next phase.
+        _set_job(job_id, progress=0.2)
+        pdf_bytes = file_path.read_bytes()
         _set_job(job_id, progress=0.35)
 
-        # 2) Chunk + extract per chunk
-        chunks = _chunk_text(text)
-        if not chunks:
-            raise RuntimeError("No text could be extracted from PDF")
+        result = extract_fields_from_pdf_bytes(pdf_bytes, client=client, model=model)
+        _set_job(job_id, progress=0.95)
 
-        extracted: list[dict[str, Any]] = []
-        # Distribute remaining progress across chunk requests (roughly).
-        per_chunk_weight = 0.6 / max(len(chunks), 1)
-        progress = 0.35
-        for i, chunk in enumerate(chunks, start=1):
-            # Call Gemini for each chunk. Each call should return JSON for project_id/name.
-            data = _gemini_extract_project_fields(chunk, client=client, model=model)
-            extracted.append(data)
-            progress += per_chunk_weight
-            # Cap at < 1.0 so the "finalize" step can bring it to 100%.
-            _set_job(job_id, progress=min(progress, 0.95))
-
-        # 3) Merge: take first non-null for each field
-        # We may extract partial info from different chunks. This merge tries to pick
-        # the first non-null occurrence for each field as a simple heuristic.
-        project_id = None
-        project_name = None
-        for item in extracted:
-            if project_id is None and item.get("project_id"):
-                project_id = item["project_id"]
-            if project_name is None and item.get("project_name"):
-                project_name = item["project_name"]
-            if project_id is not None and project_name is not None:
-                break
-
-        result = {
-            "project_id": project_id,
-            "project_name": project_name,
-            "source_filename": filename,
-        }
+        result["source_filename"] = filename
 
         # All done: mark completion and store the final structured result.
         _set_job(job_id, status=JobStatus.completed, progress=1.0, result=result)
@@ -213,11 +119,19 @@ def _process_job(job_id: str, file_path: Path, filename: str) -> None:
 
 app = FastAPI(title="SpecExtract API")
 
+_cors_origins = [
+    o.strip()
+    for o in os.getenv(
+        "CORS_ALLOW_ORIGIN",
+        "http://localhost:5173,http://localhost:5174",
+    ).split(",")
+    if o.strip()
+]
+
 app.add_middleware(
     # CORS allows a separate frontend dev server (different origin) to call our API.
     CORSMiddleware,
-    # For local dev, default to Vite's default port.
-    allow_origins=[os.getenv("CORS_ALLOW_ORIGIN", "http://localhost:5173")],
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

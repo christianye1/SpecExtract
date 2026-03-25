@@ -67,7 +67,7 @@ pip install -r requirements.txt
 Create `server/.env` (see `server/.env.example`) and set `GEMINI_API_KEY`. Optionally:
 
 ```bash
-# export GEMINI_MODEL="gemini-1.5-pro"
+# export GEMINI_MODEL="gemini-2.5-flash"
 ```
 
 ```bash
